@@ -1,0 +1,13 @@
+[package]
+name = "budgetcore-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "_budgetcore"
+crate-type = ["cdylib"]
+
+[dependencies]
+budgetcore.workspace = true
+pyo3 = { version = "0.30.1" }

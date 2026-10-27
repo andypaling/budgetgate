@@ -1,0 +1,22 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Maturin / compiled extension modules
+*.so
+*.pyd
+*.dylib
+
+# Distribution / build
+build/
+dist/
+*.egg-info/
+wheels/

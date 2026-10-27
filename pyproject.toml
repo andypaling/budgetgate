@@ -1,0 +1,29 @@
+[project]
+name = "budgetgate"
+requires-python = ">=3.14"
+version = "0.1.0"
+
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[tool.maturin]
+manifest-path = "crates/budgetcore-py/Cargo.toml"
+python-source = "python"
+module-name = "budgetgate._budgetcore"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "crates/**/Cargo.toml" },
+    { file = "crates/**/*.rs" },
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
