@@ -56,7 +56,6 @@ impl BudgetStore for InMemoryStore {
         actual: i64,
     ) -> Result<(), crate::store::CommitError> {
         let mut budgets = self.budgets();
-
         let Some(budget) = budgets.get_mut(r.key()) else {
             return Err(CommitError {
                 error: BudgetError::UnknownKey(r.key().to_owned()),
@@ -158,5 +157,158 @@ impl Budget {
             self.reserved
         );
         self.reserved -= amount;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn get_budget(limit: i64, committed: i64, reserved: i64) -> Budget {
+        Budget {
+            limit,
+            committed,
+            reserved,
+        }
+    }
+
+    #[test]
+    fn available_clamps_to_zero_when_over_limit() {
+        // Example state after `set_limit` lowered the limit below current usage
+        let budget = get_budget(10, 8, 4);
+        assert_eq!(budget.used(), 12);
+        assert_eq!(budget.available(), 0);
+    }
+
+    #[test]
+    fn available_is_limit_minus_used() {
+        let budget = get_budget(10, 4, 4);
+        assert_eq!(budget.available(), 2);
+        assert_eq!(budget.used(), 8)
+    }
+
+    #[test]
+    fn try_reserve_succeeds_on_exact_fit() {
+        let mut budget = get_budget(10, 4, 4);
+        assert_eq!(budget.try_reserve(2), Ok(()));
+        assert_eq!(budget.reserved, 6);
+    }
+
+    #[test]
+    fn try_reserve_fails_one_over_available() {
+        let mut budget = get_budget(10, 4, 4);
+
+        let pre_change_budget_view = budget.to_view();
+        let res = budget.try_reserve(3);
+        let post_change_budget_view = budget.to_view();
+
+        assert_eq!(
+            res,
+            Err(BudgetError::Exceeded {
+                requested: 3,
+                available: 2
+            })
+        );
+        assert_eq!(pre_change_budget_view, post_change_budget_view)
+    }
+
+    #[test]
+    fn try_reserve_rejects_zero() {
+        let mut budget = get_budget(10, 4, 4);
+
+        let pre_change_budget_view = budget.to_view();
+        let res = budget.try_reserve(0);
+        let post_change_budget_view = budget.to_view();
+
+        assert_eq!(res, Err(BudgetError::InvalidAmount));
+        assert_eq!(pre_change_budget_view, post_change_budget_view)
+    }
+
+    #[test]
+    fn try_reserve_rejects_negative() {
+        let mut budget = get_budget(10, 4, 4);
+
+        let pre_change_budget_view = budget.to_view();
+        let res = budget.try_reserve(-1);
+        let post_change_budget_view = budget.to_view();
+
+        assert_eq!(res, Err(BudgetError::InvalidAmount));
+        assert_eq!(pre_change_budget_view, post_change_budget_view)
+    }
+
+    #[test]
+    fn try_commit_full_moves_reserved_to_committed() {
+        let mut budget = get_budget(10, 5, 5);
+        assert_eq!(budget.try_commit(5, 5), Ok(()));
+        assert_eq!(budget.reserved, 0);
+        assert_eq!(budget.committed, 10);
+        assert_eq!(budget.available(), 0);
+    }
+
+    #[test]
+    fn try_commit_partial_frees_the_remainder() {
+        let mut budget = get_budget(10, 5, 5);
+        assert_eq!(budget.try_commit(5, 3), Ok(()));
+        assert_eq!(budget.reserved, 0);
+        assert_eq!(budget.committed, 8);
+        assert_eq!(budget.available(), 2);
+    }
+
+    #[test]
+    fn try_commit_zero_frees_everything() {
+        let mut budget = get_budget(10, 5, 5);
+        assert_eq!(budget.try_commit(5, 0), Ok(()));
+        assert_eq!(budget.reserved, 0);
+        assert_eq!(budget.committed, 5);
+        assert_eq!(budget.available(), 5);
+    }
+
+    #[test]
+    fn try_commit_rejects_actual_over_amount() {
+        let mut budget = get_budget(10, 5, 5);
+
+        let pre_change_budget_view = budget.to_view();
+        let res = budget.try_commit(2, 5);
+        let post_change_budget_view = budget.to_view();
+
+        assert_eq!(res, Err(BudgetError::InvalidAmount));
+        assert_eq!(pre_change_budget_view, post_change_budget_view);
+    }
+
+    #[test]
+    fn try_commit_rejects_negative_actual() {
+        let mut budget = get_budget(10, 5, 5);
+
+        let pre_change_budget_view = budget.to_view();
+        let res = budget.try_commit(2, -1);
+        let post_change_budget_view = budget.to_view();
+
+        assert_eq!(res, Err(BudgetError::InvalidAmount));
+        assert_eq!(pre_change_budget_view, post_change_budget_view);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "only 2 reserved")]
+    fn try_commit_panics_over_reserved() {
+        let mut budget = get_budget(10, 0, 2);
+        let _ = budget.try_commit(5, 5);
+    }
+
+    #[test]
+    fn release_frees_full_amount() {
+        let mut budget = get_budget(10, 5, 5);
+        budget.release(5);
+        assert_eq!(budget.reserved, 0);
+        assert_eq!(budget.committed, 5);
+        assert_eq!(budget.available(), 5);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "release of 6 but only 5 reserved")]
+    fn release_panics_over_reserved() {
+        let mut budget = get_budget(10, 5, 5);
+        budget.release(6);
     }
 }
