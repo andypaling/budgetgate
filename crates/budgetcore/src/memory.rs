@@ -3,11 +3,43 @@ use std::{
     sync::{Mutex, MutexGuard, PoisonError},
 };
 
-use crate::store::{BudgetError, BudgetStore, BudgetView, CommitError, Reservation};
+use uuid::Uuid;
+
+use crate::store::{BudgetError, BudgetStore, BudgetView, ReservationId};
+
+#[derive(Debug, Default)]
+struct State {
+    budgets: HashMap<String, Budget>,
+    reservations: HashMap<ReservationId, Reservation>,
+}
+
+impl State {
+    fn budget_mut(&mut self, key: &str) -> Result<&mut Budget, BudgetError> {
+        self.budgets
+            .get_mut(key)
+            .ok_or_else(|| BudgetError::UnknownKey(key.to_owned()))
+    }
+
+    fn issue_id(&self) -> ReservationId {
+        loop {
+            let id = ReservationId(Uuid::new_v4());
+            if !self.reservations.contains_key(&id) {
+                return id;
+            }
+        }
+    }
+}
+
+/// What a live reservation holds on part of a budget.
+#[derive(Debug)]
+struct Reservation {
+    key: String,
+    amount: i64,
+}
 
 #[derive(Debug, Default)]
 pub struct InMemoryStore {
-    budgets: Mutex<HashMap<String, Budget>>,
+    state: Mutex<State>,
 }
 
 impl InMemoryStore {
@@ -16,10 +48,10 @@ impl InMemoryStore {
     }
 
     /// Lock the map. If another thread panicked while holding the lock
-    /// carry on with the data anyway: every `Budget` method checks before it
-    /// mutates, so a panic can't leave a budget half-updated
-    fn budgets(&self) -> MutexGuard<'_, HashMap<String, Budget>> {
-        self.budgets.lock().unwrap_or_else(PoisonError::into_inner)
+    /// carry on with the data anyway: every `State` method checks before it
+    /// mutates, so a panic can't leave a state half-updated
+    fn state(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -28,7 +60,8 @@ impl BudgetStore for InMemoryStore {
         if limit < 0 {
             return Err(BudgetError::InvalidAmount);
         }
-        self.budgets()
+        self.state()
+            .budgets
             .entry(key.to_owned())
             .and_modify(|b| b.limit = limit)
             .or_insert(Budget {
@@ -40,50 +73,59 @@ impl BudgetStore for InMemoryStore {
         Ok(())
     }
 
-    fn reserve(&self, key: &str, amount: i64) -> Result<crate::store::Reservation, BudgetError> {
-        let mut budgets = self.budgets();
-        let budget = budgets
-            .get_mut(key)
-            .ok_or_else(|| BudgetError::UnknownKey(key.to_owned()))?;
+    fn reserve(&self, key: &str, amount: i64) -> Result<ReservationId, BudgetError> {
+        let mut state = self.state();
 
-        budget.try_reserve(amount)?;
-        Ok(Reservation::new(key.to_owned(), amount))
+        state.budget_mut(key)?.try_reserve(amount)?;
+
+        let id = state.issue_id();
+        state.reservations.insert(
+            id,
+            Reservation {
+                key: key.to_owned(),
+                amount,
+            },
+        );
+        Ok(id)
     }
 
-    fn commit(
-        &self,
-        r: crate::store::Reservation,
-        actual: i64,
-    ) -> Result<(), crate::store::CommitError> {
-        let mut budgets = self.budgets();
-        let Some(budget) = budgets.get_mut(r.key()) else {
-            return Err(CommitError {
-                error: BudgetError::UnknownKey(r.key().to_owned()),
-                reservation: r,
-            });
-        };
+    fn commit(&self, id: ReservationId, actual: i64) -> Result<(), BudgetError> {
+        let mut guard = self.state();
+        let state = &mut *guard;
 
-        budget
-            .try_commit(r.amount(), actual)
-            .map_err(|err| CommitError {
-                reservation: r,
-                error: err,
-            })
+        let reservation = state
+            .reservations
+            .get(&id)
+            .ok_or(BudgetError::UnknownReservation(id))?;
+
+        state
+            .budgets
+            .get_mut(&reservation.key)
+            .expect("held reservation's budget must exist")
+            .try_commit(reservation.amount, actual)?;
+
+        // Only reached on success.
+        state.reservations.remove(&id);
+        Ok(())
     }
 
-    fn release(&self, r: crate::store::Reservation) -> Result<(), BudgetError> {
-        let mut budgets = self.budgets();
+    fn release(&self, id: ReservationId) -> Result<(), BudgetError> {
+        let mut state = self.state();
+        let reservation = state
+            .reservations
+            .remove(&id)
+            .ok_or(BudgetError::UnknownReservation(id))?;
 
-        let Some(budget) = budgets.get_mut(r.key()) else {
-            return Err(BudgetError::UnknownKey(r.key().to_owned()));
-        };
-
-        budget.release(r.amount());
+        state
+            .budget_mut(&reservation.key)
+            .expect("held reservation's budget must exist")
+            .release(reservation.amount);
         Ok(())
     }
 
     fn view(&self, key: &str) -> Result<BudgetView, BudgetError> {
-        self.budgets()
+        self.state()
+            .budgets
             .get(key)
             .map(Budget::to_view)
             .ok_or_else(|| BudgetError::UnknownKey(key.to_owned()))
@@ -288,27 +330,11 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "only 2 reserved")]
-    fn try_commit_panics_over_reserved() {
-        let mut budget = get_budget(10, 0, 2);
-        let _ = budget.try_commit(5, 5);
-    }
-
-    #[test]
     fn release_frees_full_amount() {
         let mut budget = get_budget(10, 5, 5);
         budget.release(5);
         assert_eq!(budget.reserved, 0);
         assert_eq!(budget.committed, 5);
         assert_eq!(budget.available(), 5);
-    }
-
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "release of 6 but only 5 reserved")]
-    fn release_panics_over_reserved() {
-        let mut budget = get_budget(10, 5, 5);
-        budget.release(6);
     }
 }

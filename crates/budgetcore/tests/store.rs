@@ -5,7 +5,7 @@ use std::{
     thread,
 };
 
-use budgetcore::{BudgetError, BudgetStore, BudgetView, InMemoryStore, Reservation};
+use budgetcore::{BudgetError, BudgetStore, BudgetView, InMemoryStore, ReservationId};
 
 /// A store with one budget already set up.
 fn store_with(key: &str, limit: i64) -> InMemoryStore {
@@ -83,9 +83,9 @@ fn set_limit_rejects_negative_for_existing_key() {
 fn set_limit_update_keeps_usage() {
     let store = store_with("test_key", 10);
 
-    let r1 = store.reserve("test_key", 3).unwrap();
-    store.commit(r1, 3).unwrap();
-    let _r2 = store.reserve("test_key", 2).unwrap();
+    let id1 = store.reserve("test_key", 3).unwrap();
+    store.commit(id1, 3).unwrap();
+    let _id2 = store.reserve("test_key", 2).unwrap();
 
     store.set_limit("test_key", 5).unwrap();
 
@@ -105,7 +105,7 @@ fn reserve_then_commit_frees_unused() {
     let store = store_with("test_key", 10);
 
     // Hold the whole budget.
-    let r1 = store.reserve("test_key", 10).unwrap();
+    let id1 = store.reserve("test_key", 10).unwrap();
     assert_eq!(
         store.reserve("test_key", 1),
         Err(BudgetError::Exceeded {
@@ -115,7 +115,7 @@ fn reserve_then_commit_frees_unused() {
     );
 
     // Settle less than what was reserved.
-    store.commit(r1, 6).unwrap();
+    store.commit(id1, 6).unwrap();
     assert_eq!(
         store.view("test_key").unwrap(),
         BudgetView {
@@ -127,7 +127,7 @@ fn reserve_then_commit_frees_unused() {
     );
 
     // The unused 4 is available again.
-    let _r2 = store.reserve("test_key", 4).unwrap();
+    let _id2 = store.reserve("test_key", 4).unwrap();
     assert_eq!(
         store.reserve("test_key", 1),
         Err(BudgetError::Exceeded {
@@ -140,9 +140,9 @@ fn reserve_then_commit_frees_unused() {
 #[test]
 fn reserve_then_release_restores_budget() {
     let store = store_with("test_key", 10);
-    let r1 = store.reserve("test_key", 10).unwrap();
+    let id1 = store.reserve("test_key", 10).unwrap();
 
-    store.release(r1).unwrap();
+    store.release(id1).unwrap();
 
     assert_eq!(
         store.view("test_key").unwrap(),
@@ -155,21 +155,19 @@ fn reserve_then_release_restores_budget() {
     );
 
     // The budget is usable again
-    let _r2 = store
+    let _id2 = store
         .reserve("test_key", 10)
         .expect("full budget should be reservable after release");
 }
 
 #[test]
-fn failed_commit_returns_usable_reservation() {
+fn failed_commit_keeps_reservation_live() {
     let store = store_with("test_key", 10);
-    let r1 = store.reserve("test_key", 10).unwrap();
-
-    let commit_err = store.commit(r1, 11).unwrap_err();
-
-    assert_eq!(commit_err.error, BudgetError::InvalidAmount);
-    assert_eq!(commit_err.reservation.amount(), 10);
-    assert_eq!(commit_err.reservation.key(), "test_key");
+    let id = store.reserve("test_key", 10).unwrap();
+    assert_eq!(
+        store.commit(id, 11).unwrap_err(),
+        BudgetError::InvalidAmount
+    );
 
     // The failed commit didn't reach the store.
     assert_eq!(
@@ -182,8 +180,8 @@ fn failed_commit_returns_usable_reservation() {
         }
     );
 
-    // The returned reservation is live - releasing it frees the budget
-    store.release(commit_err.reservation).unwrap();
+    // The ID is still live: releasing it frees the budget.
+    store.release(id).unwrap();
     assert_eq!(
         store.view("test_key").unwrap(),
         BudgetView {
@@ -198,7 +196,7 @@ fn failed_commit_returns_usable_reservation() {
 #[test]
 fn lowered_limit_blocks_new_reserves_until_usage_drops() {
     let store = store_with("test_key", 10);
-    let r1 = store.reserve("test_key", 10).unwrap();
+    let id1 = store.reserve("test_key", 10).unwrap();
     store.set_limit("test_key", 5).unwrap();
 
     assert_eq!(
@@ -218,8 +216,8 @@ fn lowered_limit_blocks_new_reserves_until_usage_drops() {
         }
     );
 
-    store.release(r1).unwrap();
-    let _r2 = store.reserve("test_key", 3).unwrap();
+    store.release(id1).unwrap();
+    let _id2 = store.reserve("test_key", 3).unwrap();
 
     assert_eq!(
         store.view("test_key").unwrap(),
@@ -246,7 +244,7 @@ fn keys_are_independent() {
     let store = store_with("a", 10);
     store.set_limit("b", 3).unwrap();
 
-    let _ra = store.reserve("a", 10).unwrap();
+    let _ida = store.reserve("a", 10).unwrap();
 
     assert_eq!(
         store.view("a").unwrap(),
@@ -268,7 +266,7 @@ fn keys_are_independent() {
         }
     );
 
-    let _rb = store.reserve("b", 3).unwrap();
+    let _idb = store.reserve("b", 3).unwrap();
 
     assert_eq!(
         store.view("b").unwrap(),
@@ -281,11 +279,11 @@ fn keys_are_independent() {
     );
 }
 
-fn reserve_ones(store: &InMemoryStore, key: &str, attempts: usize) -> Vec<Reservation> {
+fn reserve_ones(store: &InMemoryStore, key: &str, attempts: usize) -> Vec<ReservationId> {
     let mut won = Vec::new();
     for _ in 0..attempts {
         match store.reserve(key, 1) {
-            Ok(reservation) => won.push(reservation),
+            Ok(id) => won.push(id),
             Err(e) => {
                 assert!(
                     matches!(e, BudgetError::Exceeded { .. }),
@@ -330,6 +328,55 @@ fn concurrent_reserves_never_exceed_limit() {
             used: LIMIT,
             committed: 0,
             reserved: LIMIT,
+        }
+    );
+}
+
+#[test]
+fn double_commit_fails() {
+    let store = store_with("test_key", 10);
+    let id = store.reserve("test_key", 10).unwrap();
+    store.commit(id, 6).unwrap();
+    let before_view = store.view("test_key").unwrap();
+
+    assert_eq!(
+        store.commit(id, 6),
+        Err(BudgetError::UnknownReservation(id))
+    );
+
+    assert_eq!(store.view("test_key").unwrap(), before_view);
+}
+
+#[test]
+fn release_after_commit_fails() {
+    let store = store_with("test_key", 10);
+    let id = store.reserve("test_key", 10).unwrap();
+    store.commit(id, 6).unwrap();
+    let before_view = store.view("test_key").unwrap();
+
+    assert_eq!(store.release(id), Err(BudgetError::UnknownReservation(id)));
+    assert_eq!(store.view("test_key").unwrap(), before_view);
+}
+
+#[test]
+fn id_from_another_store_fails() {
+    let store_a = store_with("test_key", 10);
+    let store_b = store_with("test_key", 10);
+
+    let id_a = store_a.reserve("test_key", 6).unwrap();
+    let _id_b = store_b.reserve("test_key", 4).unwrap();
+
+    assert_eq!(
+        store_b.commit(id_a, 5),
+        Err(BudgetError::UnknownReservation(id_a))
+    );
+    assert_eq!(
+        store_b.view("test_key").unwrap(),
+        BudgetView {
+            limit: 10,
+            used: 4,
+            committed: 0,
+            reserved: 4
         }
     );
 }
