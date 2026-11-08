@@ -9,3 +9,4 @@ license = "MIT"
 
 [workspace.dependencies]
 budgetcore = { path = "crates/budgetcore" }
+uuid = { version="1.29.1" }

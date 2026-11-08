@@ -15,6 +15,7 @@ version = "0.1.0"
 dependencies = [
  "budgetcore",
  "pyo3",
+ "uuid",
 ]
 
 [[package]]
@@ -126,6 +127,7 @@ dependencies = [
  "pyo3-build-config",
  "pyo3-ffi",
  "pyo3-macros",
+ "uuid",
 ]
 
 [[package]]

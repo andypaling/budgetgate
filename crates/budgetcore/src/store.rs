@@ -18,6 +18,18 @@ pub struct BudgetView {
 #[derive(Copy, Clone, Hash, Debug, PartialEq, Eq)]
 pub struct ReservationId(pub(crate) Uuid);
 
+impl From<Uuid> for ReservationId {
+    fn from(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
+}
+
+impl From<ReservationId> for Uuid {
+    fn from(id: ReservationId) -> Self {
+        id.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BudgetError {
     /// No limit has been set for this key. Fails closed.
