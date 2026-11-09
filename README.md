@@ -7,4 +7,4 @@
 A limits gateway with a Rust core. Reserve against a budget, then commit
 or release; concurrent reserves never exceed the limit.
 
-Python bindings and TCP gateway to follow.
+TCP gateway to follow.
