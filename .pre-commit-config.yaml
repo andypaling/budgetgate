@@ -17,7 +17,6 @@ repos:
         args: [--fix]
       - id: ruff-format
 
-  # Rust: uses your local toolchain
   - repo: local
     hooks:
       - id: cargo-fmt
@@ -39,4 +38,11 @@ repos:
         entry: cargo test -p budgetcore
         language: system
         types: [rust]
+        pass_filenames: false
+
+      - id: pytest
+        name: pytest
+        entry: uv run pytest
+        language: system
+        files: ^(python/|tests/|crates/)
         pass_filenames: false

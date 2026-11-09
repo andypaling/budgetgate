@@ -36,3 +36,5 @@ jobs:
         run: uv sync
       - name: Check type stubs match the extension
         run: uv run --with mypy python -m mypy.stubtest budgetgate._budgetcore
+      - name: Test
+        run: uv run pytest
