@@ -75,12 +75,18 @@ class ProtocolErrorCode(StrEnum):
 
 class ProtocolError(Exception):
     def __init__(
-        self, code: ProtocolErrorCode, message: str, request_id: int | None = None
+        self,
+        code: ProtocolErrorCode,
+        message: str,
+        request_id: int | None = None,
+        *,
+        close: bool = False,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.request_id = request_id
+        self.close = close
 
 
 def _parse_object(line: bytes) -> dict[str, Any]:
