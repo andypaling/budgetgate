@@ -151,3 +151,18 @@ def test_close_leaves_other_sessions_alone(greeted: Session, store: Store) -> No
     greeted.close()
 
     assert view(other)["reserved"] == 4
+
+
+@pytest.mark.parametrize(
+    "amount", [2**63, -(2**62) - 1], ids=["above-max", "below-min"]
+)
+def test_out_of_range_amount_is_invalid_amount(greeted: Session, amount):
+    reply, close = send(
+        greeted, {"id": 5, "op": "reserve", "key": "test_key", "amount": amount}
+    )
+
+    assert reply["ok"] is False
+    assert reply["error"] == "invalid_amount"
+    assert reply["id"] == 5
+    assert not close
+    assert not greeted.owned

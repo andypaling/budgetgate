@@ -21,7 +21,7 @@ from budgetgate import (
         (lambda s: s.reserve("test_key", -1), InvalidAmount),
         (lambda s: s.release(uuid.uuid4()), UnknownReservation),
     ],
-    ids=["unknown_key", "exceeded", "zero-amount", "negative-limit", "forgot-id"],
+    ids=["unknown-key", "exceeded", "zero-amount", "negative-limit", "forgot-id"],
 )
 def test_errors_map_to_exceptions(store: Store, call, expected) -> None:
     with pytest.raises(expected) as excinfo:
@@ -63,3 +63,32 @@ def test_repr(store: Store) -> None:
         repr(store.view("test_key"))
         == "BudgetView(limit=10, used=0, committed=0, reserved=0)"
     )
+
+
+LOWER_BOUND_ERR = 2**63
+UPPER_BOUND_ERR = -(2**63) - 1
+
+
+@pytest.mark.parametrize(
+    ("call"),
+    [
+        (lambda s: s.reserve("test_key", LOWER_BOUND_ERR)),
+        (lambda s: s.reserve("test_key", UPPER_BOUND_ERR)),
+        (lambda s: s.commit(uuid.uuid4(), LOWER_BOUND_ERR)),
+        (lambda s: s.commit(uuid.uuid4(), UPPER_BOUND_ERR)),
+        (lambda s: s.set_limit("test_key", LOWER_BOUND_ERR)),
+        (lambda s: s.set_limit("test_key", UPPER_BOUND_ERR)),
+    ],
+    ids=[
+        "reserve-lower",
+        "reserve-upper",
+        "commit-lower",
+        "commit-upper",
+        "set-limit-lower",
+        "set-limit-upper",
+    ],
+)
+def test_out_of_range_i64_raises_invalid_amount(store: Store, call) -> None:
+
+    with pytest.raises(InvalidAmount, match="64-bit"):
+        call(store)

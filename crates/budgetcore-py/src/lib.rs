@@ -1,5 +1,9 @@
 use budgetcore::{BudgetError as CoreError, BudgetStore, BudgetView, InMemoryStore};
-use pyo3::{create_exception, exceptions::PyException, prelude::*};
+use pyo3::{
+    create_exception,
+    exceptions::{PyException, PyOverflowError},
+    prelude::*,
+};
 use uuid::Uuid;
 
 create_exception!(
@@ -83,6 +87,23 @@ impl From<BudgetView> for PyBudgetView {
     }
 }
 
+/// An i64 taken from Python; out-of-range ints raise InvalidAmount
+struct Amount(i64);
+
+impl<'a, 'py> FromPyObject<'a, 'py> for Amount {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> Result<Self, Self::Error> {
+        obj.extract::<i64>().map(Amount).map_err(|err| {
+            if err.is_instance_of::<PyOverflowError>(obj.py()) {
+                InvalidAmount::new_err("must fit in a signed 64-bit integer")
+            } else {
+                err
+            }
+        })
+    }
+}
+
 #[pyclass(frozen)]
 struct Store {
     inner: InMemoryStore,
@@ -97,19 +118,19 @@ impl Store {
         }
     }
 
-    fn set_limit(&self, py: Python<'_>, key: &str, limit: i64) -> PyResult<()> {
-        py.detach(|| self.inner.set_limit(key, limit))
+    fn set_limit(&self, py: Python<'_>, key: &str, limit: Amount) -> PyResult<()> {
+        py.detach(|| self.inner.set_limit(key, limit.0))
             .map_err(to_py_err)
     }
 
-    fn reserve(&self, py: Python<'_>, key: &str, amount: i64) -> PyResult<Uuid> {
-        py.detach(|| self.inner.reserve(key, amount))
+    fn reserve(&self, py: Python<'_>, key: &str, amount: Amount) -> PyResult<Uuid> {
+        py.detach(|| self.inner.reserve(key, amount.0))
             .map(Uuid::from)
             .map_err(to_py_err)
     }
 
-    fn commit(&self, py: Python<'_>, id: Uuid, actual: i64) -> PyResult<()> {
-        py.detach(|| self.inner.commit(id.into(), actual))
+    fn commit(&self, py: Python<'_>, id: Uuid, actual: Amount) -> PyResult<()> {
+        py.detach(|| self.inner.commit(id.into(), actual.0))
             .map_err(to_py_err)
     }
 
