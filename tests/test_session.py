@@ -4,7 +4,7 @@ from typing import Any
 import budgetgate._budgetcore
 import pytest
 from budgetgate import BudgetError, Store
-from budgetgate.server import STORE_ERRORS, Session
+from budgetgate.session import STORE_ERRORS, Session
 
 
 def send(session: Session, request: dict[str, Any]) -> tuple[dict[str, Any], bool]:
