@@ -32,6 +32,8 @@ jobs:
         run: uvx ruff check .
       - name: Ruff format
         run: uvx ruff format --check .
+      - name: Type check
+        run: uv run ty check
       - name: Build extension
         run: uv sync
       - name: Check type stubs match the extension
