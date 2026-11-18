@@ -15,6 +15,7 @@ module-name = "budgetgate._budgetcore"
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.5.0",
 ]
 
 [tool.uv]
@@ -27,6 +28,7 @@ cache-keys = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 
 [tool.ruff]
 extend-exclude = ["python/budgetgate/_budgetcore.pyi"]

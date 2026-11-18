@@ -1,34 +1,45 @@
-import json
-from typing import Any
-
 import budgetgate._budgetcore
 import pytest
 from budgetgate import BudgetError, Store
+from budgetgate.messages import (
+    Commit,
+    ErrorReply,
+    Hello,
+    HelloOk,
+    ProtocolErrorCode,
+    Release,
+    ReleaseOk,
+    Reply,
+    ReservationId,
+    Reserve,
+    ReserveOk,
+    View,
+    ViewOk,
+)
 from budgetgate.session import STORE_ERRORS, Session
 
-
-def send(session: Session, request: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    """Send one request to a session; return the parsed reply and the close flag."""
-    reply, close = session.handle_line(json.dumps(request).encode())
-    return json.loads(reply), close
+KEY = "test_key"
 
 
 def hello(session: Session) -> None:
-    reply, _ = send(session, {"id": 0, "op": "hello", "version": 1})
-    assert reply["ok"]
+    assert session.handle(Hello(id=0, version=1)) == HelloOk(id=0, version=1)
 
 
-def reserve(session: Session, amount: int) -> str:
-    reply, _ = send(
-        session, {"id": 1, "op": "reserve", "key": "test_key", "amount": amount}
-    )
-    assert reply["ok"]
-    return reply["reservation_id"]
+def reserve(session: Session, amount: int) -> ReservationId:
+    reply = session.handle(Reserve(id=1, key=KEY, amount=amount))
+    assert isinstance(reply, ReserveOk), reply
+    return ReservationId(reply.reservation_id)
 
 
-def view(session: Session) -> dict[str, Any]:
-    reply, _ = send(session, {"id": 9, "op": "view", "key": "test_key"})
+def view(session: Session) -> ViewOk:
+    reply = session.handle(View(id=9, key=KEY))
+    assert isinstance(reply, ViewOk), reply
     return reply
+
+
+def error_code(reply: Reply) -> ProtocolErrorCode:
+    assert isinstance(reply, ErrorReply), reply
+    return reply.code
 
 
 @pytest.fixture
@@ -40,27 +51,29 @@ def greeted(store: Store) -> Session:
 
 
 def test_hello_succeeds(store: Store) -> None:
-    reply, close = send(Session(store), {"id": 0, "op": "hello", "version": 1})
-    assert reply == {"id": 0, "ok": True, "version": 1}
-    assert not close
+    session = Session(store)
+    assert session.handle(Hello(id=0, version=1)) == HelloOk(id=0, version=1)
+    assert not session.should_close
 
 
 def test_request_before_hello_is_rejected(store: Store) -> None:
-    reply, close = send(Session(store), {"id": 1, "op": "view", "key": "test_key"})
-    assert reply["error"] == "handshake_required"
-    assert reply["id"] == 1
-    assert not close
+    session = Session(store)
+    reply = session.handle(View(id=1, key=KEY))
+    assert error_code(reply) == ProtocolErrorCode.HANDSHAKE_REQUIRED
+    assert reply.id == 1
+    assert not session.should_close
 
 
 def test_wrong_version_closes(store: Store) -> None:
-    reply, close = send(Session(store), {"id": 0, "op": "hello", "version": 2})
-    assert reply["error"] == "unsupported_version"
-    assert close
+    session = Session(store)
+    reply = session.handle(Hello(id=0, version=2))
+    assert error_code(reply) == ProtocolErrorCode.UNSUPPORTED_VERSION
+    assert session.should_close
 
 
 def test_reserve_tracks_ownership(greeted: Session) -> None:
     reservation_id = reserve(greeted, 4)
-    assert {str(rid) for rid in greeted.owned} == {reservation_id}
+    assert greeted.owned == {reservation_id}
 
 
 def test_commit_by_another_session_is_rejected(greeted: Session, store: Store) -> None:
@@ -68,57 +81,40 @@ def test_commit_by_another_session_is_rejected(greeted: Session, store: Store) -
     other = Session(store)
     hello(other)
 
-    reply, _ = send(
-        other,
-        {"id": 2, "op": "commit", "reservation_id": reservation_id, "actual": 1},
-    )
+    reply = other.handle(Commit(id=2, reservation_id=reservation_id, actual=1))
 
-    assert reply["error"] == "unknown_reservation"
-    assert view(greeted)["reserved"] == 4
+    assert error_code(reply) == ProtocolErrorCode.UNKNOWN_RESERVATION
+    assert view(greeted).reserved == 4
 
 
 def test_failed_commit_keeps_ownership(greeted: Session) -> None:
     reservation_id = reserve(greeted, 4)
 
-    reply, _ = send(
-        greeted,
-        {"id": 2, "op": "commit", "reservation_id": reservation_id, "actual": 99},
-    )
-    assert reply["error"] == "invalid_amount"
-    assert len(greeted.owned) == 1
+    reply = greeted.handle(Commit(id=2, reservation_id=reservation_id, actual=99))
+    assert error_code(reply) == ProtocolErrorCode.INVALID_AMOUNT
+    assert greeted.owned == {reservation_id}
 
-    reply, _ = send(
-        greeted, {"id": 3, "op": "release", "reservation_id": reservation_id}
-    )
-    assert reply["ok"]
+    reply = greeted.handle(Release(id=3, reservation_id=reservation_id))
+    assert reply == ReleaseOk(id=3)
 
 
 def test_commit_removes_ownership(greeted: Session) -> None:
     reservation_id = reserve(greeted, 4)
-    commit = {"id": 2, "op": "commit", "reservation_id": reservation_id, "actual": 4}
+    commit = Commit(id=2, reservation_id=reservation_id, actual=4)
 
-    first, _ = send(greeted, commit)
-    second, _ = send(greeted, commit)
+    first = greeted.handle(commit)
+    second = greeted.handle(commit)
 
-    assert first["ok"]
-    assert second["error"] == "unknown_reservation"
+    assert not isinstance(first, ErrorReply), first
+    assert error_code(second) == ProtocolErrorCode.UNKNOWN_RESERVATION
     assert not greeted.owned
 
 
 def test_store_error_maps_to_code(greeted: Session) -> None:
-    reply, close = send(
-        greeted, {"id": 5, "op": "reserve", "key": "test_key", "amount": 99}
-    )
-    assert reply["error"] == "budget_exceeded"
-    assert reply["id"] == 5
-    assert not close
-
-
-def test_bad_line_does_not_close(greeted: Session) -> None:
-    reply, close = greeted.handle_line(b"not json\n")
-    assert json.loads(reply)["error"] == "bad_request"
-    assert json.loads(reply)["id"] is None
-    assert not close
+    reply = greeted.handle(Reserve(id=5, key=KEY, amount=99))
+    assert error_code(reply) == ProtocolErrorCode.BUDGET_EXCEEDED
+    assert reply.id == 5
+    assert not greeted.should_close
 
 
 def test_every_store_error_has_a_wire_code() -> None:
@@ -138,7 +134,7 @@ def test_close_releases_everything(greeted: Session) -> None:
 
     greeted.close()
 
-    assert view(greeted)["reserved"] == 0
+    assert view(greeted).reserved == 0
     assert not greeted.owned
 
 
@@ -150,19 +146,16 @@ def test_close_leaves_other_sessions_alone(greeted: Session, store: Store) -> No
 
     greeted.close()
 
-    assert view(other)["reserved"] == 4
+    assert view(other).reserved == 4
 
 
 @pytest.mark.parametrize(
     "amount", [2**63, -(2**62) - 1], ids=["above-max", "below-min"]
 )
-def test_out_of_range_amount_is_invalid_amount(greeted: Session, amount):
-    reply, close = send(
-        greeted, {"id": 5, "op": "reserve", "key": "test_key", "amount": amount}
-    )
+def test_out_of_range_amount_is_invalid_amount(greeted: Session, amount: int) -> None:
+    reply = greeted.handle(Reserve(id=5, key=KEY, amount=amount))
 
-    assert reply["ok"] is False
-    assert reply["error"] == "invalid_amount"
-    assert reply["id"] == 5
-    assert not close
+    assert error_code(reply) == ProtocolErrorCode.INVALID_AMOUNT
+    assert reply.id == 5
+    assert not greeted.should_close
     assert not greeted.owned

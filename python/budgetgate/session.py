@@ -1,4 +1,4 @@
-import uuid
+from typing import assert_never
 
 from budgetgate import (
     BudgetError,
@@ -8,19 +8,25 @@ from budgetgate import (
     UnknownKey,
     UnknownReservation,
 )
-from budgetgate.protocol import (
+from budgetgate.messages import (
     Commit,
+    CommitOk,
+    ErrorReply,
     Hello,
+    HelloOk,
     ProtocolError,
     ProtocolErrorCode,
     Release,
+    ReleaseOk,
+    Reply,
+    Request,
+    ReservationId,
     Reserve,
+    ReserveOk,
     SetLimit,
+    SetLimitOk,
     View,
-    decode,
-    encode_error,
-    encode_ok,
-    encode_protocol_error,
+    ViewOk,
 )
 
 STORE_ERRORS: dict[type[BudgetError], ProtocolErrorCode] = {
@@ -37,15 +43,19 @@ class Session:
     """One client connection: handshake state and the reservation it owns."""
 
     def __init__(self, store: Store):
-        self.store = store
-        self.greeted = False
-        self.owned: set[uuid.UUID] = set()
+        self._store = store
+        self._greeted = False
+        self.owned: set[ReservationId] = set()
+        self.should_close: bool = False
 
-    def handle_line(self, line: bytes) -> tuple[bytes, bool]:
-        """Handle one request line. Returns (reply, close_connection)"""
+    def handle(self, request: Request) -> Reply:
+        """Handle one decoded request and return its reply.
+
+        Never raises for protocol or store errors: both came back as an ErrorReply.
+        Sets should_close when the connection must end after this reply.
+        """
         try:
-            request = decode(line)
-            if not self.greeted and not isinstance(request, Hello):
+            if not self._greeted and not isinstance(request, Hello):
                 raise ProtocolError(
                     ProtocolErrorCode.HANDSHAKE_REQUIRED,
                     "send hello before any other request",
@@ -65,67 +75,65 @@ class Session:
                     return self._set_limit(request)
                 case View():
                     return self._view(request)
+                case _:
+                    assert_never(request)
         except ProtocolError as e:
-            return encode_protocol_error(e), e.close
+            return ErrorReply.from_protocol_error(e)
         except BudgetError as e:
-            return encode_error(
-                request_id=request.id,
-                code=STORE_ERRORS[type(e)],
-                message=str(e),
-            ), False
+            return ErrorReply(id=request.id, code=STORE_ERRORS[type(e)], message=str(e))
 
     def close(self) -> None:
         """Release every reservation this connection still owns"""
         for reservation_id in self.owned:
             try:
-                self.store.release(reservation_id)
+                self._store.release(reservation_id)
             except UnknownReservation:
                 pass
         self.owned.clear()
 
-    def _hello(self, request: Hello) -> tuple[bytes, bool]:
+    def _hello(self, request: Hello) -> HelloOk:
         if request.version != PROTOCOL_VERSION:
+            self.should_close = True
             raise ProtocolError(
                 ProtocolErrorCode.UNSUPPORTED_VERSION,
                 f"protocol version {request.version} is not supported",
                 request.id,
-                close=True,
             )
-        self.greeted = True
-        return encode_ok(request.id, version=PROTOCOL_VERSION), False
+        self._greeted = True
+        return HelloOk(id=request.id, version=PROTOCOL_VERSION)
 
-    def _commit(self, request: Commit) -> tuple[bytes, bool]:
+    def _commit(self, request: Commit) -> CommitOk:
         self._check_owned(request.reservation_id, request.id)
-        self.store.commit(request.reservation_id, request.actual)
+        self._store.commit(request.reservation_id, request.actual)
         self.owned.remove(request.reservation_id)
-        return encode_ok(request.id), False
+        return CommitOk(id=request.id)
 
-    def _release(self, request: Release) -> tuple[bytes, bool]:
+    def _release(self, request: Release) -> ReleaseOk:
         self._check_owned(request.reservation_id, request.id)
-        self.store.release(request.reservation_id)
+        self._store.release(request.reservation_id)
         self.owned.remove(request.reservation_id)
-        return encode_ok(request.id), False
+        return ReleaseOk(id=request.id)
 
-    def _reserve(self, request: Reserve) -> tuple[bytes, bool]:
-        reservation_id = self.store.reserve(request.key, request.amount)
+    def _reserve(self, request: Reserve) -> ReserveOk:
+        reservation_id = ReservationId(self._store.reserve(request.key, request.amount))
         self.owned.add(reservation_id)
-        return encode_ok(request.id, reservation_id=reservation_id), False
+        return ReserveOk(id=request.id, reservation_id=reservation_id)
 
-    def _set_limit(self, request: SetLimit) -> tuple[bytes, bool]:
-        self.store.set_limit(request.key, request.limit)
-        return encode_ok(request.id), False
+    def _set_limit(self, request: SetLimit) -> SetLimitOk:
+        self._store.set_limit(request.key, request.limit)
+        return SetLimitOk(id=request.id)
 
-    def _view(self, request: View) -> tuple[bytes, bool]:
-        budget_view = self.store.view(request.key)
-        return encode_ok(
-            request.id,
+    def _view(self, request: View) -> ViewOk:
+        budget_view = self._store.view(request.key)
+        return ViewOk(
+            id=request.id,
             limit=budget_view.limit,
             used=budget_view.used,
             committed=budget_view.committed,
             reserved=budget_view.reserved,
-        ), False
+        )
 
-    def _check_owned(self, reservation_id: uuid.UUID, request_id: int) -> None:
+    def _check_owned(self, reservation_id: ReservationId, request_id: int) -> None:
         """Treat another connection's reservation exactly like one that doesn't exist"""
         if reservation_id not in self.owned:
             raise ProtocolError(

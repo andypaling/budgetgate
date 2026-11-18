@@ -2,23 +2,34 @@ import json
 import uuid
 
 import pytest
-from budgetgate.protocol import (
+from budgetgate.codecs import CODECS, JsonCodec
+from budgetgate.messages import (
     Commit,
+    CommitOk,
+    ErrorReply,
     Hello,
+    HelloOk,
     ProtocolError,
     ProtocolErrorCode,
     Release,
+    ReleaseOk,
+    Reply,
     Request,
     ReservationId,
     Reserve,
+    ReserveOk,
     SetLimit,
+    SetLimitOk,
     View,
-    decode,
-    encode_error,
-    encode_ok,
+    ViewOk,
 )
 
 RID = ReservationId(uuid.UUID("8379acfd-0dd3-4ec8-9899-c46ee0b00d51"))
+
+
+@pytest.fixture
+def codec() -> JsonCodec:
+    return JsonCodec()
 
 
 @pytest.mark.parametrize(
@@ -44,23 +55,18 @@ RID = ReservationId(uuid.UUID("8379acfd-0dd3-4ec8-9899-c46ee0b00d51"))
         (b'{"id": 5, "op": "view", "key": "k"}', View(id=5, key="k")),
     ],
 )
-def test_decode_valid(line: bytes, expected: Request) -> None:
-    assert decode(line) == expected
+def test_decode_valid(line: bytes, expected: Request, codec: JsonCodec) -> None:
+    assert codec.decode(line) == expected
 
 
-def test_decode_ignores_unknown_fields() -> None:
+def test_decode_ignores_unknown_fields(codec: JsonCodec) -> None:
     line = b'{"id": 2, "op": "reserve", "key": "k", "amount": 30, "priority": "high"}'
-    assert decode(line) == Reserve(id=2, key="k", amount=30)
+    assert codec.decode(line) == Reserve(id=2, key="k", amount=30)
 
 
-def test_decode_accepts_trailing_newline() -> None:
-    line = b'{"id": 2, "op": "reserve", "key": "k", "amount": 30}\n'
-    assert decode(line) == Reserve(id=2, key="k", amount=30)
-
-
-def test_decode_leaves_value_checks_to_store() -> None:
+def test_decode_leaves_value_checks_to_store(codec: JsonCodec) -> None:
     line = b'{"id": 2, "op": "reserve", "key": "k", "amount": -5}'
-    assert decode(line) == Reserve(id=2, key="k", amount=-5)
+    assert codec.decode(line) == Reserve(id=2, key="k", amount=-5)
 
 
 @pytest.mark.parametrize(
@@ -86,9 +92,9 @@ def test_decode_leaves_value_checks_to_store() -> None:
         "bad-uuid",
     ],
 )
-def test_decode_error_keeps_request_id(line: bytes) -> None:
+def test_decode_error_keeps_request_id(line: bytes, codec: JsonCodec) -> None:
     with pytest.raises(ProtocolError) as excinfo:
-        decode(line)
+        codec.decode(line)
     assert excinfo.value.code == ProtocolErrorCode.BAD_REQUEST
     assert excinfo.value.request_id == 2
 
@@ -114,50 +120,67 @@ def test_decode_error_keeps_request_id(line: bytes) -> None:
         "invalid-utf8",
     ],
 )
-def test_decode_error_without_request_id(line: bytes) -> None:
+def test_decode_error_without_request_id(line: bytes, codec: JsonCodec) -> None:
     with pytest.raises(ProtocolError) as excinfo:
-        decode(line)
+        codec.decode(line)
     assert excinfo.value.code == ProtocolErrorCode.BAD_REQUEST
     assert excinfo.value.request_id is None
 
 
-def test_encode_ok_plain() -> None:
-    assert json.loads(encode_ok(1)) == {"id": 1, "ok": True}
-
-
-def test_encode_ok_with_uuid() -> None:
-    assert json.loads(encode_ok(2, reservation_id=RID)) == {
-        "id": 2,
-        "ok": True,
-        "reservation_id": str(RID),
-    }
-
-
-def test_encode_ok_rejects_reserved_names() -> None:
-    with pytest.raises(ValueError):
-        encode_ok(1, id=5)
-
-
-def test_encode_error_with_id() -> None:
-    reply = json.loads(encode_error(7, ProtocolErrorCode.BUDGET_EXCEEDED, "too much"))
-    assert reply == {
-        "id": 7,
-        "ok": False,
-        "error": "budget_exceeded",
-        "message": "too much",
-    }
-
-
-def test_encode_error_without_id() -> None:
-    reply = json.loads(encode_error(None, ProtocolErrorCode.BAD_REQUEST, "bad"))
-    assert reply["id"] is None
-
-
 @pytest.mark.parametrize(
-    "line",
-    [encode_ok(1), encode_error(1, ProtocolErrorCode.BAD_REQUEST, "bad")],
-    ids=["ok", "error"],
+    ("reply", "expected"),
+    [
+        (HelloOk(id=0, version=1), {"id": 0, "ok": True, "version": 1}),
+        (SetLimitOk(id=1), {"id": 1, "ok": True}),
+        (
+            ReserveOk(id=2, reservation_id=RID),
+            {"id": 2, "ok": True, "reservation_id": str(RID)},
+        ),
+        (CommitOk(id=3), {"id": 3, "ok": True}),
+        (ReleaseOk(id=4), {"id": 4, "ok": True}),
+        (
+            ViewOk(id=5, limit=100, used=30, committed=20, reserved=10),
+            {
+                "id": 5,
+                "ok": True,
+                "limit": 100,
+                "used": 30,
+                "committed": 20,
+                "reserved": 10,
+            },
+        ),
+        (
+            ErrorReply(
+                id=7, code=ProtocolErrorCode.BUDGET_EXCEEDED, message="too much"
+            ),
+            {"id": 7, "ok": False, "error": "budget_exceeded", "message": "too much"},
+        ),
+        (
+            ErrorReply(id=None, code=ProtocolErrorCode.BAD_REQUEST, message="bad"),
+            {"id": None, "ok": False, "error": "bad_request", "message": "bad"},
+        ),
+    ],
+    ids=[
+        "hello",
+        "set-limit",
+        "reserve",
+        "commit",
+        "release",
+        "view",
+        "error",
+        "error-no-id",
+    ],
 )
-def test_encoded_lines_end_with_newline(line: bytes) -> None:
-    assert line.endswith(b"\n")
-    assert line.count(b"\n") == 1
+def test_encode(codec: JsonCodec, reply: Reply, expected: dict[str, object]) -> None:
+    assert json.loads(codec.encode(reply)) == expected
+
+
+def test_encode_has_no_framing(codec: JsonCodec) -> None:
+    payload = codec.encode(HelloOk(id=0, version=1))
+    assert b"\n" not in payload
+
+
+def test_registry_is_keyed_by_each_codecs_format() -> None:
+    assert isinstance(CODECS[b"J"], JsonCodec)
+    for fmt, registered in CODECS.items():
+        assert fmt == registered.FORMAT
