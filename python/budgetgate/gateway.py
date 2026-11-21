@@ -4,7 +4,7 @@ from types import TracebackType
 from typing import Self
 
 from budgetgate import Store
-from budgetgate.codecs import CODECS, DEFAULT_FORMAT
+from budgetgate.codecs import CODECS, DEFAULT_FORMAT, ServerCodec
 from budgetgate.framing import (
     BadPreamble,
     FrameTooLarge,
@@ -69,10 +69,8 @@ class Gateway:
         try:
             try:
                 fmt = await read_preamble(reader)
-            except BadPreamble:
-                fmt = None
-            codec = CODECS.get(fmt) if fmt else None
-            if codec is None:
+                codec: ServerCodec = CODECS[fmt]
+            except BadPreamble, KeyError:
                 await write_preamble(writer, DEFAULT_FORMAT)
                 return
             await write_preamble(writer, codec.FORMAT)
@@ -84,17 +82,17 @@ class Gateway:
                     reply = ErrorReply(
                         id=None, code=ProtocolErrorCode.BAD_REQUEST, message=str(e)
                     )
-                    await write_frame(writer, codec.encode(reply))
+                    await write_frame(writer, codec.encode_reply(reply))
                     break
 
                 try:
-                    request = codec.decode(payload)
+                    request = codec.decode_request(payload)
                 except ProtocolError as e:
                     reply = ErrorReply.from_protocol_error(e)
                 else:
                     reply = session.handle(request)
 
-                await write_frame(writer, codec.encode(reply))
+                await write_frame(writer, codec.encode_reply(reply))
                 if session.should_close:
                     break
         except ConnectionError, asyncio.IncompleteReadError:

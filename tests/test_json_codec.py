@@ -55,18 +55,18 @@ def codec() -> JsonCodec:
         (b'{"id": 5, "op": "view", "key": "k"}', View(id=5, key="k")),
     ],
 )
-def test_decode_valid(line: bytes, expected: Request, codec: JsonCodec) -> None:
-    assert codec.decode(line) == expected
+def test_decode_request_valid(line: bytes, expected: Request, codec: JsonCodec) -> None:
+    assert codec.decode_request(line) == expected
 
 
-def test_decode_ignores_unknown_fields(codec: JsonCodec) -> None:
+def test_decode_request_ignores_unknown_fields(codec: JsonCodec) -> None:
     line = b'{"id": 2, "op": "reserve", "key": "k", "amount": 30, "priority": "high"}'
-    assert codec.decode(line) == Reserve(id=2, key="k", amount=30)
+    assert codec.decode_request(line) == Reserve(id=2, key="k", amount=30)
 
 
-def test_decode_leaves_value_checks_to_store(codec: JsonCodec) -> None:
+def test_decode_request_leaves_value_checks_to_store(codec: JsonCodec) -> None:
     line = b'{"id": 2, "op": "reserve", "key": "k", "amount": -5}'
-    assert codec.decode(line) == Reserve(id=2, key="k", amount=-5)
+    assert codec.decode_request(line) == Reserve(id=2, key="k", amount=-5)
 
 
 @pytest.mark.parametrize(
@@ -92,9 +92,9 @@ def test_decode_leaves_value_checks_to_store(codec: JsonCodec) -> None:
         "bad-uuid",
     ],
 )
-def test_decode_error_keeps_request_id(line: bytes, codec: JsonCodec) -> None:
+def test_decode_request_error_keeps_request_id(line: bytes, codec: JsonCodec) -> None:
     with pytest.raises(ProtocolError) as excinfo:
-        codec.decode(line)
+        codec.decode_request(line)
     assert excinfo.value.code == ProtocolErrorCode.BAD_REQUEST
     assert excinfo.value.request_id == 2
 
@@ -120,9 +120,9 @@ def test_decode_error_keeps_request_id(line: bytes, codec: JsonCodec) -> None:
         "invalid-utf8",
     ],
 )
-def test_decode_error_without_request_id(line: bytes, codec: JsonCodec) -> None:
+def test_decode_request_error_without_request_id(line: bytes, codec: JsonCodec) -> None:
     with pytest.raises(ProtocolError) as excinfo:
-        codec.decode(line)
+        codec.decode_request(line)
     assert excinfo.value.code == ProtocolErrorCode.BAD_REQUEST
     assert excinfo.value.request_id is None
 
@@ -171,12 +171,14 @@ def test_decode_error_without_request_id(line: bytes, codec: JsonCodec) -> None:
         "error-no-id",
     ],
 )
-def test_encode(codec: JsonCodec, reply: Reply, expected: dict[str, object]) -> None:
-    assert json.loads(codec.encode(reply)) == expected
+def test_encode_reply(
+    codec: JsonCodec, reply: Reply, expected: dict[str, object]
+) -> None:
+    assert json.loads(codec.encode_reply(reply)) == expected
 
 
-def test_encode_has_no_framing(codec: JsonCodec) -> None:
-    payload = codec.encode(HelloOk(id=0, version=1))
+def test_encode_reply_has_no_framing(codec: JsonCodec) -> None:
+    payload = codec.encode_reply(HelloOk(id=0, version=1))
     assert b"\n" not in payload
 
 

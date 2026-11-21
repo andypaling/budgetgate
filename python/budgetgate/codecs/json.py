@@ -5,6 +5,7 @@ from typing import Any
 
 from budgetgate.codecs.base import Codec
 from budgetgate.messages import (
+    BaseReply,
     Commit,
     ErrorReply,
     Hello,
@@ -77,7 +78,7 @@ def _uuid(key: str, value: Any) -> ReservationId:
 class JsonCodec(Codec):
     FORMAT = b"J"
 
-    def decode(self, payload: bytes) -> Request:
+    def decode_request(self, payload: bytes) -> Request:
         obj = _parse_object(payload)
         request_id = _read_id(obj)
 
@@ -133,7 +134,7 @@ class JsonCodec(Codec):
             e.request_id = request_id
             raise
 
-    def encode(self, reply: Reply) -> bytes:
+    def encode_reply(self, reply: Reply) -> bytes:
         match reply:
             case ErrorReply():
                 obj = {
@@ -151,6 +152,14 @@ class JsonCodec(Codec):
                 }
 
         return json.dumps(obj, default=_json_default).encode("utf-8")
+
+    # TODO
+    def decode_reply[R: BaseReply](
+        self, payload: bytes, expected: type[R]
+    ) -> R | ErrorReply: ...  # ty: ignore[invalid-implicit-return-in-function-with-stub-body]
+
+    # TODO
+    def encode_request(self, request: Request) -> bytes: ...  # ty: ignore[invalid-implicit-return-in-function-with-stub-body]
 
 
 def _json_default(value: object) -> str:
