@@ -13,6 +13,17 @@ class ProtocolErrorCode(StrEnum):
     HANDSHAKE_REQUIRED = auto()
     UNSUPPORTED_VERSION = auto()
 
+    UNRECOGNISED = (
+        auto()
+    )  # Client-side only - server sent a code the client doesn't know
+
+    @classmethod
+    def from_wire(cls, value: str) -> ProtocolErrorCode:
+        try:
+            return cls(value)
+        except ValueError:
+            return cls.UNRECOGNISED
+
 
 class ProtocolError(Exception):
     def __init__(

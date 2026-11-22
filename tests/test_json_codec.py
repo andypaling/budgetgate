@@ -1,9 +1,11 @@
 import json
 import uuid
+from dataclasses import dataclass
 
 import pytest
 from budgetgate.codecs import CODECS, JsonCodec
 from budgetgate.messages import (
+    BaseReply,
     Commit,
     CommitOk,
     ErrorReply,
@@ -186,3 +188,137 @@ def test_registry_is_keyed_by_each_codecs_format() -> None:
     assert isinstance(CODECS[b"J"], JsonCodec)
     for fmt, registered in CODECS.items():
         assert fmt == registered.FORMAT
+
+
+REQUEST_CASES: list[tuple[Request, dict[str, object]]] = [
+    (Hello(id=0, version=1), {"id": 0, "op": "hello", "version": 1}),
+    (
+        SetLimit(id=1, key="k", limit=100),
+        {"id": 1, "op": "set_limit", "key": "k", "limit": 100},
+    ),
+    (
+        Reserve(id=2, key="k", amount=30),
+        {"id": 2, "op": "reserve", "key": "k", "amount": 30},
+    ),
+    (
+        Commit(id=3, reservation_id=RID, actual=25),
+        {"id": 3, "op": "commit", "reservation_id": str(RID), "actual": 25},
+    ),
+    (
+        Release(id=4, reservation_id=RID),
+        {"id": 4, "op": "release", "reservation_id": str(RID)},
+    ),
+    (View(id=5, key="k"), {"id": 5, "op": "view", "key": "k"}),
+]
+REQUESTS: list[Request] = [request for request, _ in REQUEST_CASES]
+
+OkReply = HelloOk | SetLimitOk | ReserveOk | CommitOk | ReleaseOk | ViewOk
+OK_REPLIES: list[OkReply] = [
+    HelloOk(id=0, version=1),
+    SetLimitOk(id=1),
+    ReserveOk(id=2, reservation_id=RID),
+    CommitOk(id=3),
+    ReleaseOk(id=4),
+    ViewOk(id=5, limit=100, used=30, committed=25, reserved=5),
+]
+
+
+def _name(value: object) -> str:
+    return type(value).__name__
+
+
+@pytest.mark.parametrize(
+    ("r", "expected"), REQUEST_CASES, ids=[_name(r) for r in REQUESTS]
+)
+def test_encode_request(codec: JsonCodec, r: Request, expected: dict[str, object]):
+    encoded = codec.encode_request(r)
+    assert b"\n" not in encoded
+    assert json.loads(encoded) == expected
+
+
+@pytest.mark.parametrize("r", REQUESTS, ids=_name)
+def test_encode_decode_request_round_trip(codec: JsonCodec, r: Request):
+    assert codec.decode_request(codec.encode_request(r)) == r
+
+
+@pytest.mark.parametrize("reply", OK_REPLIES, ids=_name)
+def test_ok_reply_round_trip(codec: JsonCodec, reply: OkReply) -> None:
+    assert codec.decode_reply(codec.encode_reply(reply), type(reply)) == reply
+
+
+@pytest.mark.parametrize("reply_id", [7, None])
+def test_error_reply_round_trip(codec: JsonCodec, reply_id: int | None) -> None:
+    reply = ErrorReply(id=reply_id, code=ProtocolErrorCode.BUDGET_EXCEEDED, message="m")
+    assert codec.decode_reply(codec.encode_reply(reply), ReserveOk) == reply
+
+
+def test_decode_reply_unrecognised_code(codec: JsonCodec) -> None:
+    payload = b'{"id": 1, "ok": false, "error": "rate_limited", "message": "slow"}'
+    assert codec.decode_reply(payload, CommitOk) == ErrorReply(
+        id=1, code=ProtocolErrorCode.UNRECOGNISED, message="slow"
+    )
+
+
+def test_decode_reply_ignores_unknown_fields(codec: JsonCodec) -> None:
+    payload = b'{"id": 1, "ok": true, "extra": 5}'
+    assert codec.decode_reply(payload, CommitOk) == CommitOk(id=1)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'{"id": 1}',
+        b'{"id": 1, "ok": 1}',
+        b'{"ok": true}',
+        b'{"id": null, "ok": true}',
+        b'{"id": 1, "ok": true}',
+        b'{"id": 1, "ok": false, "error": 5, "message": "m"}',
+    ],
+    ids=[
+        "no-ok",
+        "ok-not-bool",
+        "no-id",
+        "null-id-on-ok",
+        "missing-field",
+        "error-not-str",
+    ],
+)
+def test_decode_reply_malformed(codec: JsonCodec, payload: bytes) -> None:
+    with pytest.raises(ProtocolError):
+        codec.decode_reply(payload, ReserveOk)
+
+
+def test_decode_reply_error_keeps_id(codec: JsonCodec) -> None:
+    payload = b'{"id": 7, "ok": true, "reservation_id": "nope"}'
+    with pytest.raises(ProtocolError) as e:
+        codec.decode_reply(payload, ReserveOk)
+    assert e.value.request_id == 7
+
+
+def test_decode_reply_rejects_non_reply_type(codec: JsonCodec) -> None:
+    @dataclass(frozen=True, kw_only=True, slots=True)
+    class NotAReply(BaseReply): ...
+
+    with pytest.raises(TypeError):
+        codec.decode_reply(b'{"id": 1, "ok": true}', NotAReply)
+
+
+def test_encode_reply_refuses_unrecognised(codec: JsonCodec) -> None:
+    reply = ErrorReply(id=1, code=ProtocolErrorCode.UNRECOGNISED, message="m")
+    with pytest.raises(ValueError):
+        codec.encode_reply(reply)
+
+
+def test_error_code_from_wire() -> None:
+    assert (
+        ProtocolErrorCode.from_wire("budget_exceeded")
+        is ProtocolErrorCode.BUDGET_EXCEEDED
+    )
+    assert ProtocolErrorCode.from_wire("rate_limited") is ProtocolErrorCode.UNRECOGNISED
+
+
+def test_codec_format_must_be_one_byte() -> None:
+    with pytest.raises(TypeError):
+
+        class BadCodec(JsonCodec):
+            FORMAT = b"JJ"
