@@ -169,10 +169,30 @@ async def test_oversized_frame_is_rejected_then_closed(client: Client) -> None:
     assert await client.recv() is None
 
 
-async def test_bad_preamble_gets_server_preamble_then_eof(gateway: Gateway) -> None:
+@pytest.mark.parametrize(
+    "preamble",
+    [b"GET / HTTP/1.1\r\n\r\n", b"BG\x01P", b"BG\x02J"],
+    ids=["not-budgetgate", "unknown-format", "wrong-wire-version"],
+)
+async def test_bad_preamble_gets_server_preamble_then_eof(
+    gateway: Gateway, preamble: bytes
+) -> None:
     reader, writer = await asyncio.open_connection(HOST, gateway.port)
-    writer.write(b"GET / HTTP/1.1\r\n\r\n")
+    writer.write(preamble)
     await writer.drain()
 
     assert await asyncio.wait_for(reader.read(), TIMEOUT) == make_preamble(b"J")
     writer.close()
+
+
+async def test_malformed_request_gets_error_and_connection_stays_open(
+    client: Client,
+) -> None:
+    await client.send_frame(b"not_json")
+
+    reply = await client.recv()
+
+    assert reply is not None
+    assert reply["id"] is None
+    assert reply["error"] == "bad_request"
+    assert (await client.request("view", key="missing"))["error"] == "unknown_key"
