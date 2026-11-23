@@ -1,7 +1,7 @@
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -9,9 +9,9 @@ from budgetgate import Store
 from budgetgate.framing import MAX_FRAME, make_preamble
 from budgetgate.gateway import Gateway
 from budgetgate.messages import Op
+from helpers import TIMEOUT, eventually
 
 HOST = "127.0.0.1"
-TIMEOUT = 1.0
 
 
 class Client:
@@ -79,19 +79,6 @@ class Client:
         self.writer.close()
         with contextlib.suppress(ConnectionError):
             await self.writer.wait_closed()
-
-
-async def eventually(check: Callable[[], bool], timeout: float = TIMEOUT) -> None:
-    """Poll until check() is true. Server-side cleanup after a disconnect is async."""
-    async with asyncio.timeout(timeout):
-        while not check():
-            await asyncio.sleep(0.01)
-
-
-@pytest.fixture
-async def gateway(store: Store) -> AsyncIterator[Gateway]:
-    async with Gateway(store, port=0) as gw:
-        yield gw
 
 
 @pytest.fixture
