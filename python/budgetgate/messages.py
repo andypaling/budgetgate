@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from enum import StrEnum, auto
 from typing import ClassVar, NewType, Self
 
+PROTOCOL_VERSION = 1
+
 
 class ProtocolErrorCode(StrEnum):
     BAD_REQUEST = auto()

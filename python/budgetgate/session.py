@@ -2,13 +2,12 @@ from typing import assert_never
 
 from budgetgate import (
     BudgetError,
-    BudgetExceeded,
-    InvalidAmount,
     Store,
-    UnknownKey,
     UnknownReservation,
 )
+from budgetgate.errors import STORE_ERRORS
 from budgetgate.messages import (
+    PROTOCOL_VERSION,
     Commit,
     CommitOk,
     ErrorReply,
@@ -28,15 +27,6 @@ from budgetgate.messages import (
     View,
     ViewOk,
 )
-
-STORE_ERRORS: dict[type[BudgetError], ProtocolErrorCode] = {
-    UnknownKey: ProtocolErrorCode.UNKNOWN_KEY,
-    InvalidAmount: ProtocolErrorCode.INVALID_AMOUNT,
-    BudgetExceeded: ProtocolErrorCode.BUDGET_EXCEEDED,
-    UnknownReservation: ProtocolErrorCode.UNKNOWN_RESERVATION,
-}
-
-PROTOCOL_VERSION = 1
 
 
 class Session:
